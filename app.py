@@ -5,6 +5,9 @@ import time
 import json
 from openai import AzureOpenAI
 import os
+from azure.core.credentials import AzureKeyCredential
+from azure.search.documents import SearchClient
+from azure.search.documents.models import VectorizedQuery
 
 # ==========================================
 # 1. 配置與設置
@@ -68,26 +71,73 @@ def load_real_data(file_path="nasa_sample.csv"):
     except FileNotFoundError:
         st.error(f"找不到檔案: {file_path}")
         return None
-    
-def get_manual_content():
-    return """
-    [Ariel JGT/4 Maintenance Manual, Section 5-2]
-    Symptom: High frequency vibration on cylinder head.
-    Probable Cause: Suction Valve Spring Fatigue.
-    Action: Inspect valve seat and replace spring kit (Part# B-1234-VLV).
-    
-    [Section 5-3]
-    Warning Signs:
-    - Vibration exceeding 0.15 IPS
-    - Frequency spike in 2-4 kHz range
-    - Temperature increase near valve assembly
-    
-    [Section 5-4]
-    Recommended Actions:
-    1. Immediate shutdown if vibration > 0.20 IPS
-    2. Schedule valve inspection within 24 hours
-    3. Order replacement parts (Lead time: 2-3 days)
+def get_real_manual_content_from_azure(user_query, azure_openai_client):
     """
+    [Real RAG Retrieval]
+    1. 將使用者的問題 (Query) 轉成向量 (Embedding)
+    2. 到 Azure AI Search 進行向量相似度搜尋 (Vector Search)
+    3. 回傳最相關的文件段落
+    """
+    try:
+        # 1. 初始化搜尋客戶端
+        search_client = SearchClient(
+            endpoint=st.secrets["SEARCH_ENDPOINT"], 
+            index_name=st.secrets["SEARCH_INDEX_NAME"], 
+            credential=AzureKeyCredential(st.secrets["SEARCH_KEY"])
+        )
+        
+        # 2. 將查詢字串轉為向量 (使用 OpenAI Ada-002 或 3-small)
+        # 注意：這邊要呼叫 Embedding API
+        embedding_response = azure_openai_client.embeddings.create(
+            input=user_query,
+            model="text-embedding-ada-002" # 必須跟建立 Index 時用的模型一樣
+        )
+        query_vector = embedding_response.data[0].embedding
+        
+        # 3. 執行向量搜尋 (Vector Search)
+        vector_query = VectorizedQuery(
+            vector=query_vector, 
+            k_nearest_neighbors=3, 
+            fields="text_vector" 
+        )
+        
+        results = search_client.search(  
+            search_text=None,  
+            vector_queries=[vector_query],
+            select=["chunk", "title"] # 只取回內容和頁碼
+        )  
+        
+        # 4. 整理結果
+        retrieved_text = ""
+        for result in results:
+            source_info = result.get('title', 'Unknown Source')
+            text_content = result.get('chunk', '')
+            retrieved_text += f"[Source: {source_info}]\n{text_content}\n\n"
+            
+        return retrieved_text if retrieved_text else "No relevant info found in manuals."
+
+    except Exception as e:
+        return f"Search Error: {str(e)} (Using mock data instead)"
+    
+# def get_manual_content():
+#     return """
+#     [Ariel JGT/4 Maintenance Manual, Section 5-2]
+#     Symptom: High frequency vibration on cylinder head.
+#     Probable Cause: Suction Valve Spring Fatigue.
+#     Action: Inspect valve seat and replace spring kit (Part# B-1234-VLV).
+    
+#     [Section 5-3]
+#     Warning Signs:
+#     - Vibration exceeding 0.15 IPS
+#     - Frequency spike in 2-4 kHz range
+#     - Temperature increase near valve assembly
+    
+#     [Section 5-4]
+#     Recommended Actions:
+#     1. Immediate shutdown if vibration > 0.20 IPS
+#     2. Schedule valve inspection within 24 hours
+#     3. Order replacement parts (Lead time: 2-3 days)
+#     """
 
 def call_mock_sap_api(part_id):
     time.sleep(0.5)
@@ -233,7 +283,7 @@ azure_client = init_azure_openai()
 top_col1, top_col2 = st.columns([3, 1])
 
 with top_col1:
-    st.subheader("📡 Zone 1: Real-time Monitor")
+    st.subheader("📡 Zone 1: Real-time Monitor ")
     chart_placeholder = st.empty()
 
 with top_col2:
@@ -410,7 +460,13 @@ if st.session_state['simulation_df'] is not None:
                 # 只在首次運行 AI 診斷
                 if st.session_state['ai_diagnosis'] is None and azure_client:
                     with st.status("🚀 SLM triggered Cloud Agent. Analyzing with Azure OpenAI...", expanded=True) as status:
-                        manual_text = get_manual_content()
+                        search_query = "high vibration suction valve failure symptoms" # 關鍵字
+                        manual_text = get_real_manual_content_from_azure(search_query, azure_client)
+                        
+                        # 存起來顯示用
+                        st.session_state['retrieved_context'] = manual_text
+                        
+                        status.write("Generating diagnosis...")
                         diagnosis = diagnose_with_azure_openai(
                             azure_client, 
                             st.session_state['simulation_df'], 
@@ -439,8 +495,9 @@ if st.session_state['simulation_df'] is not None:
                     if 'downtime_risk' in diag:
                         st.error(f"⚠️ **Downtime Risk:** {diag['downtime_risk']}")
 
-                    with st.expander("📄 Retrieved Manual Context", expanded=False):
-                        st.code(get_manual_content(), language="text")
+                    with st.expander("📄 Retrieved Manual Context (Azure AI Search)", expanded=False):
+                        context_to_show = st.session_state.get('retrieved_context', "No content retrieved")
+                        st.code(context_to_show, language="text")
             
             else:
                 st.info("SLM determined no cloud analysis needed. Saving costs. 💰")

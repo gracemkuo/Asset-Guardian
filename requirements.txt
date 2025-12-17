@@ -5,3 +5,5 @@ plotly
 numpy 
 openai
 python-dotenv
+azure-search-documents 
+azure-identity

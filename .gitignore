@@ -2,3 +2,7 @@
 .env
 .streamlit/
 .devcontainer/
+app1.py
+app2.py
+test.py
+test_azure_search.py
