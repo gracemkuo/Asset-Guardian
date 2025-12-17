@@ -4,10 +4,8 @@ import numpy as np
 import time
 import json
 from openai import AzureOpenAI
-from dotenv import load_dotenv
 import os
-# 載入環境變數
-load_dotenv()
+
 # ==========================================
 # 1. 配置與設置
 # ==========================================
@@ -32,11 +30,14 @@ st.markdown("""
 def init_azure_openai():
     """初始化 Azure OpenAI 客戶端"""
     try:
-        azure_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
-        api_key = os.getenv("AZURE_OPENAI_API_KEY")
-        api_version = os.getenv("AZURE_OPENAI_API_VERSION")
+        # azure_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
+        # api_key = os.getenv("AZURE_OPENAI_API_KEY")
+        # api_version = os.getenv("AZURE_OPENAI_API_VERSION")
+        azure_endpoint = st.secrets["AZURE_OPENAI_ENDPOINT"]
+        api_key = st.secrets["AZURE_OPENAI_API_KEY"]
+        api_version = st.secrets["AZURE_OPENAI_API_VERSION"]
         if not azure_endpoint or not api_key or not api_version:
-            st.error("Azure OpenAI 環境變數未正確設置，請檢查 .env 檔案。")
+            st.error("Azure OpenAI 配置未設置")
             return None
         client = AzureOpenAI(
             azure_endpoint=azure_endpoint,
@@ -102,7 +103,35 @@ def call_mock_sap_api(part_id):
         }
     }
     return response
-
+# ==========================================
+# 新增 SLM 邏輯 (模擬地端 Phi-3)
+# ==========================================
+def run_edge_slm_triage(vibration_val):
+    """
+    [Edge AI] 使用 SLM (如 Phi-3 Mini) 進行地端快篩
+    優勢: 不需聯網、速度快、零成本
+    """
+    # 在實際場景中，這裡會呼叫本地的 Ollama 或 ONNX Runtime 跑 Phi-3
+    time.sleep(0.5) # 模擬 SLM 推論速度 (比 LLM 快很多)
+    
+    if vibration_val > 0.18:
+        return {
+            "status": "CRITICAL ESCALATION",
+            "msg": "⚠️ High-frequency harmonics detected. Immediate cloud analysis required.",
+            "should_escalate": True
+        }
+    elif vibration_val > 0.15:
+        return {
+            "status": "WARNING",
+            "msg": "⚠️ Vibration drift detected. Recommend logging event.",
+            "should_escalate": True # 雖然只是警告，但我們還是讓它上雲端演示給面試官看
+        }
+    else:
+        return {
+            "status": "NORMAL",
+            "msg": "✅ Minor fluctuation. No action needed.",
+            "should_escalate": False
+        }
 def diagnose_with_azure_openai(client, vibration_data, manual_context):
     """使用 Azure OpenAI 進行智能診斷"""
     
@@ -143,7 +172,7 @@ Response must be valid JSON only with this exact structure:
 
     try:
         response = client.chat.completions.create(
-            model=os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME"),
+            model=st.secrets["AZURE_OPENAI_DEPLOYMENT_NAME"],
             messages=[
                 {"role": "system", "content": "You are a specialized AI assistant for industrial equipment diagnostics. Always respond with valid JSON only."},
                 {"role": "user", "content": prompt}
@@ -300,60 +329,121 @@ if st.session_state['simulation_df'] is not None:
         #     with st.expander("📄 View Retrieved Context (Evidence)", expanded=True):
         #         st.code(manual_text, language="text")
         
+        # with action_col1:
+        #     st.info("🤖 **Step 1: AI Diagnosis (Azure OpenAI + RAG)**")
+            
+        #     # 只在首次運行 AI 診斷
+        #     if st.session_state['ai_diagnosis'] is None and azure_client:
+        #         with st.status("Analyzing with Azure OpenAI...", expanded=True) as status:
+        #             manual_text = get_manual_content()
+        #             diagnosis = diagnose_with_azure_openai(
+        #                 azure_client, 
+        #                 st.session_state['simulation_df'], 
+        #                 manual_text
+        #             )
+        #             st.session_state['ai_diagnosis'] = diagnosis
+        #             status.update(label="AI Analysis Complete ✨", state="complete", expanded=False)
+            
+        #     # 顯示診斷結果
+        #     if st.session_state['ai_diagnosis']:
+        #         diag = st.session_state['ai_diagnosis']
+                
+        #         # 顯示嚴重程度
+        #         severity_colors = {
+        #             "Low": "🟢",
+        #             "Medium": "🟡", 
+        #             "High": "🟠",
+        #             "Critical": "🔴"
+        #         }
+        #         severity_icon = severity_colors.get(diag.get('severity', 'High'), "🔴")
+        #         st.warning(f"{severity_icon} **Severity:** {diag.get('severity', 'High')}")
+                
+        #         # 根因分析 - 修復這裡
+        #         root_cause_text = diag.get('root_cause', 'Analysis in progress')
+        #         st.success(f"**Root Cause:** {root_cause_text}")
+                
+        #         # 建議行動
+        #         if 'actions' in diag and isinstance(diag['actions'], list):
+        #             st.markdown("**Recommended Actions:**")
+        #             for idx, action in enumerate(diag['actions'], 1):
+        #                 st.markdown(f"{idx}. {action}")
+                
+        #         # 停機風險
+        #         if 'downtime_risk' in diag:
+        #             st.error(f"⚠️ **Downtime Risk:** {diag['downtime_risk']}")
+                
+        #         # 顯示 RAG 檢索到的原始內容
+        #         with st.expander("📄 Retrieved Manual Context", expanded=False):
+        #             st.code(get_manual_content(), language="text")
+            
+        #     elif not azure_client:
+        #         st.error("Azure OpenAI 未配置，使用基礎診斷模式")
+        #         st.success("**Root Cause:** Suction Valve Spring Fatigue (Basic Mode)")
+                
+        #         # 基礎模式也顯示手動內容
+        #         with st.expander("📄 View Retrieved Context (Evidence)", expanded=True):
+        #             st.code(get_manual_content(), language="text")
+
+        # === 左下：AI 診斷 (修改後：SLM + LLM 協作) ===
         with action_col1:
-            st.info("🤖 **Step 1: AI Diagnosis (Azure OpenAI + RAG)**")
+            st.subheader("🤖 Zone 2: Hybrid AI Diagnosis")
             
-            # 只在首次運行 AI 診斷
-            if st.session_state['ai_diagnosis'] is None and azure_client:
-                with st.status("Analyzing with Azure OpenAI...", expanded=True) as status:
-                    manual_text = get_manual_content()
-                    diagnosis = diagnose_with_azure_openai(
-                        azure_client, 
-                        st.session_state['simulation_df'], 
-                        manual_text
-                    )
-                    st.session_state['ai_diagnosis'] = diagnosis
-                    status.update(label="AI Analysis Complete ✨", state="complete", expanded=False)
+            # --- Layer 1: Edge SLM (Phi-3) ---
+            st.markdown("##### 1️⃣ Edge Triage (Phi-3 Mini)")
             
-            # 顯示診斷結果
-            if st.session_state['ai_diagnosis']:
-                diag = st.session_state['ai_diagnosis']
-                
-                # 顯示嚴重程度
-                severity_colors = {
-                    "Low": "🟢",
-                    "Medium": "🟡", 
-                    "High": "🟠",
-                    "Critical": "🔴"
-                }
-                severity_icon = severity_colors.get(diag.get('severity', 'High'), "🔴")
-                st.warning(f"{severity_icon} **Severity:** {diag.get('severity', 'High')}")
-                
-                # 根因分析 - 修復這裡
-                root_cause_text = diag.get('root_cause', 'Analysis in progress')
-                st.success(f"**Root Cause:** {root_cause_text}")
-                
-                # 建議行動
-                if 'actions' in diag and isinstance(diag['actions'], list):
-                    st.markdown("**Recommended Actions:**")
-                    for idx, action in enumerate(diag['actions'], 1):
-                        st.markdown(f"{idx}. {action}")
-                
-                # 停機風險
-                if 'downtime_risk' in diag:
-                    st.error(f"⚠️ **Downtime Risk:** {diag['downtime_risk']}")
-                
-                # 顯示 RAG 檢索到的原始內容
-                with st.expander("📄 Retrieved Manual Context", expanded=False):
-                    st.code(get_manual_content(), language="text")
+            # 取得最後一筆震動值
+            last_val = st.session_state['final_val']
             
-            elif not azure_client:
-                st.error("Azure OpenAI 未配置，使用基礎診斷模式")
-                st.success("**Root Cause:** Suction Valve Spring Fatigue (Basic Mode)")
+            # 執行 SLM
+            slm_result = run_edge_slm_triage(last_val)
+            
+            if slm_result['status'] == "CRITICAL ESCALATION":
+                st.error(f"**[{slm_result['status']}]** {slm_result['msg']}")
+            else:
+                st.warning(f"**[{slm_result['status']}]** {slm_result['msg']}")
+            
+            # --- Layer 2: Cloud LLM (GPT-4o) ---
+            # 只有當 SLM 認為需要升級處理 (should_escalate) 時，才呼叫 Azure OpenAI
+            if slm_result['should_escalate']:
+                st.markdown("##### 2️⃣ Cloud Expert Analysis (GPT-4o)")
                 
-                # 基礎模式也顯示手動內容
-                with st.expander("📄 View Retrieved Context (Evidence)", expanded=True):
-                    st.code(get_manual_content(), language="text")
+                # 只在首次運行 AI 診斷
+                if st.session_state['ai_diagnosis'] is None and azure_client:
+                    with st.status("🚀 SLM triggered Cloud Agent. Analyzing with Azure OpenAI...", expanded=True) as status:
+                        manual_text = get_manual_content()
+                        diagnosis = diagnose_with_azure_openai(
+                            azure_client, 
+                            st.session_state['simulation_df'], 
+                            manual_text
+                        )
+                        st.session_state['ai_diagnosis'] = diagnosis
+                        status.update(label="Deep Analysis Complete ✨", state="complete", expanded=False)
+                
+                # 顯示 GPT-4o 的詳細診斷結果 (這部分保持原本的顯示邏輯)
+                if st.session_state['ai_diagnosis']:
+                    diag = st.session_state['ai_diagnosis']
+                    
+                    # ... (這裡放原本顯示 root_cause, actions 的代碼) ...
+                    # 顯示嚴重程度
+                    severity_colors = {"Low": "🟢", "Medium": "🟡", "High": "🟠", "Critical": "🔴"}
+                    severity_icon = severity_colors.get(diag.get('severity', 'High'), "🔴")
+                    st.caption(f"{severity_icon} **Severity:** {diag.get('severity', 'High')}")
+                    
+                    st.success(f"**Root Cause:** {diag.get('root_cause', 'Analysis in progress')}")
+                    
+                    if 'actions' in diag and isinstance(diag['actions'], list):
+                        st.markdown("**Recommended Actions:**")
+                        for idx, action in enumerate(diag['actions'], 1):
+                            st.markdown(f"{idx}. {action}")
+                    
+                    if 'downtime_risk' in diag:
+                        st.error(f"⚠️ **Downtime Risk:** {diag['downtime_risk']}")
+
+                    with st.expander("📄 Retrieved Manual Context", expanded=False):
+                        st.code(get_manual_content(), language="text")
+            
+            else:
+                st.info("SLM determined no cloud analysis needed. Saving costs. 💰")
         # === 右下：SAP 執行 ===
         with action_col2:
             st.warning("🏢 **Step 2: SAP Execution (ERP Bridge)**")
