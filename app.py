@@ -2,168 +2,211 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import time
-import plotly.express as px
-from datetime import datetime, timedelta
+import json
 
 # ==========================================
-# CONFIGURATION & MOCK DATA
+# 1. 配置與設置
 # ==========================================
-st.set_page_config(page_title="Enerflex Asset Guardian", layout="wide")
+st.set_page_config(page_title="Enerflex Asset Guardian", layout="wide", page_icon="🛡️")
 
-# DEMO_MODE: True means we use simulated LLM responses (Safest for interviews). 
-# False would require actual Azure OpenAI API keys.
-DEMO_MODE = True 
+# 自定義 CSS: 優化 Metric 顯示與區塊間距
+st.markdown("""
+    <style>
+    .stMetric {
+        background-color: #f0f2f6;
+        padding: 10px;
+        border-radius: 5px;
+        border-left: 5px solid #ff4b4b;
+    }
+    div.block-container {padding-top: 2rem;}
+    </style>
+    """, unsafe_allow_html=True)
 
-# 模擬的 RAG 知識庫 (Ariel JGT/4 Manual Snippets)
-KNOWLEDGE_BASE = {
-    "Vib_High_Cyl2": """
-    [Source: Ariel JGT/4 Maintenance Manual, Section 5.2]
-    Symptom: High frequency vibration on Cylinder 2 throw.
-    Probable Cause: Valve plate fatigue or broken spring in Suction Valve.
-    Action: Inspect suction valve assembly. Replace if debris found.
-    Part Number: B-5732-K (Suction Valve Kit).
-    """
-}
-
-# 模擬的 SAP ERP 庫存數據
-SAP_DATABASE = {
-    "B-5732-K": {"name": "Suction Valve Kit (JGT/4)", "stock": 4, "location": "Oman Warehouse A", "lead_time": "1 Day"},
-    "A-1102-X": {"name": "Piston Ring Set", "stock": 0, "location": "Houston HQ", "lead_time": "14 Days"}
-}
+# 全局閾值
+ANOMALY_THRESHOLD = 0.15
 
 # ==========================================
-# 1. LEFT BRAIN: The Analyst (Data Simulation)
+# 2. 核心邏輯 (保持不變)
 # ==========================================
-def generate_sensor_data(n_points=100, drift=False):
-    """
-    Simulates sensor data. 
-    If drift=True, adds a gradual increase to simulate 'Data Drift' before failure.
-    Purpose: Demonstrate LSTM's ability to catch trends before thresholds.
-    """
-    dates = [datetime.now() - timedelta(minutes=x) for x in range(n_points)]
-    dates.reverse()
+
+def load_real_data(file_path="nasa_sample.csv"):
+    try:
+        df = pd.read_csv(file_path)
+        target_col = df.columns[1] if len(df.columns) > 1 else df.columns[0]
+        df = df.rename(columns={target_col: "Vibration (IPS)"})
+        if len(df) > 500:
+            df = df.tail(500).reset_index(drop=True)
+        df["Timestamp"] = df.index
+        return df
+    except FileNotFoundError:
+        st.error(f"找不到檔案: {file_path}")
+        return None
     
-    # Base vibration signal (Normal operation around 0.3 IPS)
-    noise = np.random.normal(0, 0.02, n_points)
-    values = 0.3 + noise
+def get_manual_content():
+    return """
+    [Ariel JGT/4 Maintenance Manual, Section 5-2]
+    Symptom: High frequency vibration on cylinder head.
+    Probable Cause: Suction Valve Spring Fatigue.
+    Action: Inspect valve seat and replace spring kit (Part# B-1234-VLV).
+    """
+
+def call_mock_sap_api(part_id):
+    time.sleep(0.5)
+    response = {
+        "status": "success",
+        "system": "SAP-S4HANA-PROD",
+        "data": {
+            "material_id": part_id,
+            "description": "KIT, VALVE, SUCTION, JGT/4",
+            "plant": "OM01 (Oman Maradi)",
+            "qty": 2,
+            "loc": "WH-A"
+        }
+    }
+    return response
+
+# ==========================================
+# 3. Streamlit UI (優化版佈局)
+# ==========================================
+
+st.title("🛡️ Enerflex Asset Guardian | Cognitive Maintenance")
+
+# --- 上層：監控面板 (Top Monitor) ---
+# 比例 3:1，讓圖表寬一點，指標在旁邊
+top_col1, top_col2 = st.columns([3, 1])
+
+with top_col1:
+    st.subheader("📡 Zone 1: Real-time Monitor")
+    chart_placeholder = st.empty()
+
+with top_col2:
+    st.subheader("📊 Status")
+    metric_placeholder = st.empty()
+    status_placeholder = st.empty() # 用來顯示 "Running" 或 "Alert"
+    run_btn = st.button("▶️ Start Simulation", type="primary", use_container_width=True)
+
+# 變數初始化
+if 'simulation_df' not in st.session_state:
+    st.session_state['simulation_df'] = None # 用來存圖表數據
+
+if 'data_finished' not in st.session_state:
+    st.session_state['data_finished'] = False
+if 'final_val' not in st.session_state:
+    st.session_state['final_val'] = 0.0
+
+# --- 執行模擬邏輯 ---
+if run_btn:
+    # 重置狀態
+    st.session_state['sap_checked'] = False
+    st.session_state['data_finished'] = False
     
-    if drift:
-        # Simulate a linear drift starting from the middle of the dataset
-        drift_values = np.linspace(0, 0.4, n_points)
-        values = values + drift_values
-        
-    return pd.DataFrame({"Timestamp": dates, "Vibration (IPS)": values})
+    # 生成數據
+    dummy_df = pd.DataFrame({
+        "Timestamp": range(100),
+        "bearing_1": np.concatenate([
+            np.random.normal(0.06, 0.002, 70), 
+            np.linspace(0.06, 0.2, 30) + np.random.normal(0, 0.01, 30) 
+        ])
+    })
+    dummy_df.to_csv("nasa_sample.csv", index=False)
+    data = load_real_data("nasa_sample.csv")
 
-# ==========================================
-# 2. RIGHT BRAIN: The Expert (RAG Engine)
-# ==========================================
-def query_cognitive_engine(anomaly_context):
-    """
-    Simulates the RAG (Retrieval-Augmented Generation) process.
-    Input: Anomaly data (Context).
-    Output: Natural language diagnosis.
-    """
-    if DEMO_MODE:
-        time.sleep(1.5) # Simulate processing time
+    if data is not None:
+        status_placeholder.info("System Running...")
+        for i in range(1, len(data)):
+            current_df = data.iloc[:i]
+            # 更新圖表
+            chart_placeholder.line_chart(current_df.set_index("Timestamp"), height=300)
+            
+            val = current_df.iloc[-1]["Vibration (IPS)"]
+            
+            # 更新指標
+            delta_color = "normal" if val < ANOMALY_THRESHOLD else "inverse"
+            metric_placeholder.metric(
+                "Vibration (IPS)", 
+                f"{val:.3f}", 
+                delta=f"{val-0.06:.3f}", 
+                delta_color=delta_color
+            )
+            time.sleep(0.06) # 加快一點速度
         
-        # 1. Retrieve
-        retrieved_doc = KNOWLEDGE_BASE["Vib_High_Cyl2"]
-        
-        # 2. Generate (Simulated LLM Output)
-        response = f"""
-        **Diagnosis:** Based on the vibration drift pattern in Cylinder 2, the Cognitive Engine has detected a **Suction Valve Failure**.
-        
-        **Evidence:**
-        * Model Confidence: 98.2% (LSTM Drift Detection)
-        * Retrieved Context: "{retrieved_doc.strip()}"
-        
-        **Recommendation:**
-        Isolate Unit 3 immediately. Inspect Cylinder 2 Suction Valve. Prepare Part #B-5732-K.
-        """
-        return response, "B-5732-K"
-    else:
-        # Here you would put actual Azure OpenAI / LangChain code
-        return "LLM API Call Placeholder", None
+        st.session_state['data_finished'] = True
+        st.session_state['final_val'] = val
+        st.session_state['simulation_df'] = data
 
-# ==========================================
-# 3. EXECUTION: SAP Integration
-# ==========================================
-def check_sap_inventory(part_id):
-    """
-    Simulates API call to SAP ERP system.
-    """
-    time.sleep(0.5) # Simulate API latency
-    return SAP_DATABASE.get(part_id, None)
 
-# ==========================================
-# MAIN INTERFACE (Streamlit)
-# ==========================================
-def main():
-    # --- Sidebar ---
-    st.sidebar.image("https://upload.wikimedia.org/wikipedia/commons/thumb/c/c3/Python-logo-notext.svg/1200px-Python-logo-notext.svg.png", width=50) # Placeholder logo
-    st.sidebar.title("Simulation Controls")
-    simulation_state = st.sidebar.radio("Scenario:", ["Normal Operation", "Anomaly Detected (Drift)"])
+# --- 下層：決策戰情室 (Bottom Action Center) ---
+# 只有在數據跑完且有異常時才顯示
+if st.session_state['simulation_df'] is not None:
+    # 畫最後一張靜態圖
+    chart_placeholder.line_chart(st.session_state['simulation_df'].set_index("Timestamp"), height=300)
     
-    # --- Header ---
-    st.title("🛡️ Enerflex Asset Guardian")
-    st.markdown("### Cognitive Maintenance Pilot | Oman - Maradi Huraymah Field")
-    st.markdown("---")
+    # 顯示最後的 Metric
+    val = st.session_state['final_val']
+    delta_color = "normal" if val < ANOMALY_THRESHOLD else "inverse"
+    metric_placeholder.metric("Vibration (IPS)", f"{val:.3f}", delta=f"{val-0.06:.3f}", delta_color=delta_color)
+    if val > ANOMALY_THRESHOLD:
+        status_placeholder.error("⛔ CRITICAL ALERT")
+        
+        st.divider() # 分隔線
+        st.subheader("🧠 Zone 2 & 3: Incident Response Center")
+        
+        # 這裡將下面分為左右兩半：左邊是 AI 腦，右邊是 SAP 手
+        action_col1, action_col2 = st.columns(2, gap="medium")
+        
+        # === 左下：AI 診斷 ===
+        with action_col1:
+            st.info("🤖 **Step 1: AI Diagnosis (RAG Engine)**")
+            
+            # 使用 status 元件讓 loading 更好看
+            with st.status("Analyzing vibration patterns...", expanded=True) as status:
+                time.sleep(1)
+                manual_text = get_manual_content()
+                status.update(label="Diagnosis Complete", state="complete", expanded=False)
+            
+            st.success("**Root Cause:** Suction Valve Spring Fatigue")
+            
+            with st.expander("📄 View Retrieved Context (Evidence)", expanded=True):
+                st.code(manual_text, language="text")
 
-    # --- Dashboard Layout ---
-    col1, col2 = st.columns([2, 1])
+        # === 右下：SAP 執行 ===
+        with action_col2:
+            st.warning("🏢 **Step 2: SAP Execution (ERP Bridge)**")
+            
+            # 初始化
+            if 'sap_checked' not in st.session_state:
+                st.session_state['sap_checked'] = False
 
-    with col1:
-        st.subheader("📡 Real-time Sensor Telemetry (Ariel JGT/4)")
-        
-        # Determine data state
-        is_drift = (simulation_state == "Anomaly Detected (Drift)")
-        df = generate_sensor_data(drift=is_drift)
-        
-        # Plotting
-        fig = px.line(df, x='Timestamp', y='Vibration (IPS)', title="Vibration Sensor - Cylinder 2")
-        
-        # Add Threshold Line (Visualizing Reactive vs Proactive)
-        fig.add_hline(y=0.6, line_dash="dash", line_color="red", annotation_text="SCADA Trip Threshold (0.6 IPS)")
-        
-        if is_drift:
-            # Highlight the drift area
-            fig.add_vrect(x0=df['Timestamp'].iloc[50], x1=df['Timestamp'].iloc[-1], 
-                          fillcolor="yellow", opacity=0.1, annotation_text="AI Detected Drift")
-            st.plotly_chart(fig, use_container_width=True)
+            # 按鈕 1: 查庫存
+            if st.button("🔍 Check SAP Inventory (MM Module)", use_container_width=True):
+                st.session_state['sap_checked'] = True
             
-            # Simulated LSTM Alert
-            st.error("🚨 ALERT: LSTM Model detected anomaly drift (Confidence: 98.2%). Triggering Cognitive Diagnosis...")
-        else:
-            st.plotly_chart(fig, use_container_width=True)
-            st.success("✅ System Status: Healthy. Model Drift: 0.02% (Normal).")
-
-    with col2:
-        st.subheader("🧠 Cognitive Engine (RAG)")
-        
-        if is_drift:
-            with st.spinner('Analyzing sensor patterns & Retrieving Manuals...'):
-                diagnosis_report, part_id = query_cognitive_engine("High Vibration Cyl 2")
-            
-            # Display RAG Result
-            st.markdown("### 🤖 AI Diagnosis")
-            st.info(diagnosis_report)
-            
-            st.markdown("---")
-            st.subheader("🛠️ Human-in-the-Loop Action")
-            
-            if st.button("Approve & Check SAP Inventory"):
-                st.write(f"Querying SAP for Part ID: **{part_id}**...")
-                part_info = check_sap_inventory(part_id)
+            if st.session_state['sap_checked']:
+                sap_data = call_mock_sap_api("B-1234-VLV")
                 
-                if part_info:
-                    st.success(f"📦 **Stock Available!**")
-                    st.json(part_info)
-                    st.button("🚀 Execute Work Order #OM-2024-998")
-                else:
-                    st.warning("Part not found.")
-        else:
-            st.markdown("*Waiting for alerts...*")
-            st.markdown("The system is monitoring 24/7. No intervention needed.")
+                # 使用 col 讓 JSON 和結果並排顯示，節省空間
+                res_c1, res_c2 = st.columns([1, 1])
+                with res_c1:
+                    with st.expander("View API JSON", expanded=False): # 預設收起 JSON
+                        st.json(sap_data)
+                with res_c2:
+                    if sap_data['data']['qty'] > 0:
+                        st.success(f"✅ Stock: {sap_data['data']['qty']} EA")
+                    else:
+                        st.error("Out of Stock")
 
-if __name__ == "__main__":
-    main()
+                # Human-in-the-Loop 區域
+                st.markdown("**👷 Engineer Approval**")
+                engineer_notes = st.text_area("Field Notes", "Confirmed valve issue. Proceed.", height=80)
+                
+                # 按鈕 2: 開單
+                if st.button("🚀 Approve & Create Work Order (PM Module)", type="primary", use_container_width=True):
+                    st.toast("Connecting to SAP S/4HANA...", icon="⏳")
+                    time.sleep(1)
+                    st.balloons()
+                    st.success(f"✅ PM Order Created! [Ref: {int(time.time())}]")
+                    st.caption(f"Logged Notes: {engineer_notes}")
+
+    else:
+        status_placeholder.success("✅ Normal Operation")
+        st.success("Equipment is running within optimal parameters.")
