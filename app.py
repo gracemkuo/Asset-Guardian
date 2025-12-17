@@ -3,7 +3,11 @@ import pandas as pd
 import numpy as np
 import time
 import json
-
+from openai import AzureOpenAI
+from dotenv import load_dotenv
+import os
+# 載入環境變數
+load_dotenv()
 # ==========================================
 # 1. 配置與設置
 # ==========================================
@@ -21,7 +25,29 @@ st.markdown("""
     div.block-container {padding-top: 2rem;}
     </style>
     """, unsafe_allow_html=True)
-
+# ==========================================
+# 1.5 Azure OpenAI 初始化
+# ==========================================
+@st.cache_resource
+def init_azure_openai():
+    """初始化 Azure OpenAI 客戶端"""
+    try:
+        azure_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
+        api_key = os.getenv("AZURE_OPENAI_API_KEY")
+        api_version = os.getenv("AZURE_OPENAI_API_VERSION")
+        if not azure_endpoint or not api_key or not api_version:
+            st.error("Azure OpenAI 環境變數未正確設置，請檢查 .env 檔案。")
+            return None
+        client = AzureOpenAI(
+            azure_endpoint=azure_endpoint,
+            api_key=api_key,
+            api_version=api_version
+        )
+        return client
+    except Exception as e:
+        st.error(f"Azure OpenAI 初始化失敗: {str(e)}")
+        return None
+    
 # 全局閾值
 ANOMALY_THRESHOLD = 0.15
 
@@ -48,6 +74,18 @@ def get_manual_content():
     Symptom: High frequency vibration on cylinder head.
     Probable Cause: Suction Valve Spring Fatigue.
     Action: Inspect valve seat and replace spring kit (Part# B-1234-VLV).
+    
+    [Section 5-3]
+    Warning Signs:
+    - Vibration exceeding 0.15 IPS
+    - Frequency spike in 2-4 kHz range
+    - Temperature increase near valve assembly
+    
+    [Section 5-4]
+    Recommended Actions:
+    1. Immediate shutdown if vibration > 0.20 IPS
+    2. Schedule valve inspection within 24 hours
+    3. Order replacement parts (Lead time: 2-3 days)
     """
 
 def call_mock_sap_api(part_id):
@@ -65,12 +103,102 @@ def call_mock_sap_api(part_id):
     }
     return response
 
+def diagnose_with_azure_openai(client, vibration_data, manual_context):
+    """使用 Azure OpenAI 進行智能診斷"""
+    
+    # 準備振動數據摘要
+    recent_readings = vibration_data.tail(10)['Vibration (IPS)'].tolist()
+    max_vibration = vibration_data['Vibration (IPS)'].max()
+    avg_vibration = vibration_data['Vibration (IPS)'].mean()
+    trend = "increasing" if recent_readings[-1] > recent_readings[0] else "stable/decreasing"
+    
+    # 構建 Prompt
+    prompt = f"""You are an expert maintenance engineer for Enerflex compressor systems.
+
+**Current Situation:**
+- Maximum Vibration: {max_vibration:.4f} IPS
+- Average Vibration: {avg_vibration:.4f} IPS
+- Recent Trend: {trend}
+- Threshold: {ANOMALY_THRESHOLD} IPS
+- Recent 10 Readings: {[f'{x:.4f}' for x in recent_readings]}
+
+**Reference Manual:**
+{manual_context}
+
+**Task:**
+Provide a concise diagnostic report including:
+1. Root Cause Analysis (2-3 sentences)
+2. Severity Level (Low/Medium/High/Critical)
+3. Recommended Actions (numbered list, max 3 items)
+4. Estimated Downtime if not addressed
+
+Response must be valid JSON only with this exact structure:
+{{
+    "root_cause": "your analysis here",
+    "severity": "High",
+    "actions": ["action 1", "action 2", "action 3"],
+    "downtime_risk": "estimated timeframe"
+}}
+"""
+
+    try:
+        response = client.chat.completions.create(
+            model=os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME"),
+            messages=[
+                {"role": "system", "content": "You are a specialized AI assistant for industrial equipment diagnostics. Always respond with valid JSON only."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.3,
+            max_tokens=500
+        )
+        
+        # 解析回應
+        result_text = response.choices[0].message.content.strip()
+        
+        # 移除可能的 markdown code block 標記
+        if result_text.startswith("```json"):
+            result_text = result_text.replace("```json", "").replace("```", "").strip()
+        elif result_text.startswith("```"):
+            result_text = result_text.replace("```", "").strip()
+        
+        # 嘗試解析 JSON
+        try:
+            diagnosis = json.loads(result_text)
+            
+            # 驗證必要欄位
+            if not all(key in diagnosis for key in ['root_cause', 'severity', 'actions', 'downtime_risk']):
+                raise ValueError("Missing required fields")
+                
+            return diagnosis
+            
+        except (json.JSONDecodeError, ValueError) as e:
+            # JSON 解析失敗，返回預設結構
+            st.warning(f"AI response parsing issue, using fallback format")
+            return {
+                "root_cause": "Suction Valve Spring Fatigue based on vibration pattern analysis",
+                "severity": "High",
+                "actions": [
+                    "Immediate shutdown if vibration exceeds 0.20 IPS",
+                    "Schedule valve inspection within 24 hours", 
+                    "Order replacement parts (Part# B-1234-VLV)"
+                ],
+                "downtime_risk": "3-5 days if not addressed promptly"
+            }
+        
+    except Exception as e:
+        st.error(f"AI 診斷失敗: {str(e)}")
+        return {
+            "root_cause": "System diagnostic error - manual inspection required",
+            "severity": "High",
+            "actions": ["Contact maintenance team immediately"],
+            "downtime_risk": "Unknown"
+        }
 # ==========================================
 # 3. Streamlit UI (優化版佈局)
 # ==========================================
 
 st.title("🛡️ Enerflex Asset Guardian | Cognitive Maintenance")
-
+azure_client = init_azure_openai()
 # --- 上層：監控面板 (Top Monitor) ---
 # 比例 3:1，讓圖表寬一點，指標在旁邊
 top_col1, top_col2 = st.columns([3, 1])
@@ -93,12 +221,15 @@ if 'data_finished' not in st.session_state:
     st.session_state['data_finished'] = False
 if 'final_val' not in st.session_state:
     st.session_state['final_val'] = 0.0
+if 'ai_diagnosis' not in st.session_state:
+    st.session_state['ai_diagnosis'] = None
 
 # --- 執行模擬邏輯 ---
 if run_btn:
     # 重置狀態
     st.session_state['sap_checked'] = False
     st.session_state['data_finished'] = False
+    st.session_state['ai_diagnosis'] = None
     
     # 生成數據
     dummy_df = pd.DataFrame({
@@ -155,20 +286,74 @@ if st.session_state['simulation_df'] is not None:
         action_col1, action_col2 = st.columns(2, gap="medium")
         
         # === 左下：AI 診斷 ===
+        # with action_col1:
+        #     st.info("🤖 **Step 1: AI Diagnosis (RAG Engine)**")
+            
+        #     # 使用 status 元件讓 loading 更好看
+        #     with st.status("Analyzing vibration patterns...", expanded=True) as status:
+        #         time.sleep(1)
+        #         manual_text = get_manual_content()
+        #         status.update(label="Diagnosis Complete", state="complete", expanded=False)
+            
+        #     st.success("**Root Cause:** Suction Valve Spring Fatigue")
+            
+        #     with st.expander("📄 View Retrieved Context (Evidence)", expanded=True):
+        #         st.code(manual_text, language="text")
+        
         with action_col1:
-            st.info("🤖 **Step 1: AI Diagnosis (RAG Engine)**")
+            st.info("🤖 **Step 1: AI Diagnosis (Azure OpenAI + RAG)**")
             
-            # 使用 status 元件讓 loading 更好看
-            with st.status("Analyzing vibration patterns...", expanded=True) as status:
-                time.sleep(1)
-                manual_text = get_manual_content()
-                status.update(label="Diagnosis Complete", state="complete", expanded=False)
+            # 只在首次運行 AI 診斷
+            if st.session_state['ai_diagnosis'] is None and azure_client:
+                with st.status("Analyzing with Azure OpenAI...", expanded=True) as status:
+                    manual_text = get_manual_content()
+                    diagnosis = diagnose_with_azure_openai(
+                        azure_client, 
+                        st.session_state['simulation_df'], 
+                        manual_text
+                    )
+                    st.session_state['ai_diagnosis'] = diagnosis
+                    status.update(label="AI Analysis Complete ✨", state="complete", expanded=False)
             
-            st.success("**Root Cause:** Suction Valve Spring Fatigue")
+            # 顯示診斷結果
+            if st.session_state['ai_diagnosis']:
+                diag = st.session_state['ai_diagnosis']
+                
+                # 顯示嚴重程度
+                severity_colors = {
+                    "Low": "🟢",
+                    "Medium": "🟡", 
+                    "High": "🟠",
+                    "Critical": "🔴"
+                }
+                severity_icon = severity_colors.get(diag.get('severity', 'High'), "🔴")
+                st.warning(f"{severity_icon} **Severity:** {diag.get('severity', 'High')}")
+                
+                # 根因分析 - 修復這裡
+                root_cause_text = diag.get('root_cause', 'Analysis in progress')
+                st.success(f"**Root Cause:** {root_cause_text}")
+                
+                # 建議行動
+                if 'actions' in diag and isinstance(diag['actions'], list):
+                    st.markdown("**Recommended Actions:**")
+                    for idx, action in enumerate(diag['actions'], 1):
+                        st.markdown(f"{idx}. {action}")
+                
+                # 停機風險
+                if 'downtime_risk' in diag:
+                    st.error(f"⚠️ **Downtime Risk:** {diag['downtime_risk']}")
+                
+                # 顯示 RAG 檢索到的原始內容
+                with st.expander("📄 Retrieved Manual Context", expanded=False):
+                    st.code(get_manual_content(), language="text")
             
-            with st.expander("📄 View Retrieved Context (Evidence)", expanded=True):
-                st.code(manual_text, language="text")
-
+            elif not azure_client:
+                st.error("Azure OpenAI 未配置，使用基礎診斷模式")
+                st.success("**Root Cause:** Suction Valve Spring Fatigue (Basic Mode)")
+                
+                # 基礎模式也顯示手動內容
+                with st.expander("📄 View Retrieved Context (Evidence)", expanded=True):
+                    st.code(get_manual_content(), language="text")
         # === 右下：SAP 執行 ===
         with action_col2:
             st.warning("🏢 **Step 2: SAP Execution (ERP Bridge)**")
