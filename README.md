@@ -1,7 +1,3 @@
-
-
----
-
 # 🛡️ Enerflex Asset Guardian: Cognitive Maintenance Pilot (Oman)
 
 ### Optimizing BOOM Models via OT/IT Convergence
