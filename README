@@ -11,6 +11,17 @@
 
 ---
 
+## 📑 Table of Contents
+
+- [Executive Summary](#-executive-summary)
+- [System Architecture](#️-system-architecture)
+- [Key Technical Features](#-key-technical-features)
+- [Tech Stack](#️-tech-stack)
+- [How to Run Locally](#-how-to-run-locally)
+- [Note to Interviewers](#-note-to-interviewers)
+
+---
+
 ## 📖 Executive Summary
 
 *For the Interviewer: The "Why" behind this project.*
@@ -29,31 +40,30 @@ In remote oil & gas fields (specifically our pilot in Oman), "downtime" is the m
 
 The system follows a tiered intelligence architecture designed to optimize cloud costs and latency.
 
-*(Note: Please refer to the diagram above for the data flow)*
+![System Architecture](architecture.png)
+
+*Figure: End-to-end data flow from OT sensors to IT/SAP integration*
 
 ### 🧠 Workflow Explanation
 
 The architecture is designed to mimic a "Digital Engineer" workflow:
 
 1. **Data Ingestion (OT Layer):**
-* Real-time vibration sensor data (simulated Ariel JGT/4 Compressor) is streamed into the system.
+   * Real-time vibration sensor data (simulated Ariel JGT/4 Compressor) is streamed into the system.
 
-
-2. **Tier 1: Edge Triage (SLM - Phi-3):**     * **Engineering Decision:** Instead of sending *every* data point to a costly GPT-4 model, we use a Small Language Model (SLM), **Phi-3**, as a gatekeeper.
-* It acts as an anomaly detector, filtering out noise and only escalating "high-drift" events to the cloud. This reduces inference costs by ~90%.
-
+2. **Tier 1: Edge Triage (SLM - Phi-3):**
+   * **Engineering Decision:** Instead of sending *every* data point to a costly GPT-4 model, we use a Small Language Model (SLM), **Phi-3**, as a gatekeeper.
+   * It acts as an anomaly detector, filtering out noise and only escalating "high-drift" events to the cloud. This reduces inference costs by ~90%.
 
 3. **Tier 2: Expert Diagnosis (LLM - GPT-4o + RAG):**
-* When an anomaly is escalated, **GPT-4o** analyzes the trend.
-* **RAG Implementation:** To prevent hallucinations, the model retrieves context from **Azure AI Search** (indexed technical manuals) before generating a diagnosis. This ensures the advice is grounded in manufacturer specifications.
-
+   * When an anomaly is escalated, **GPT-4o** analyzes the trend.
+   * **RAG Implementation:** To prevent hallucinations, the model retrieves context from **Azure AI Search** (indexed technical manuals) before generating a diagnosis. This ensures the advice is grounded in manufacturer specifications.
 
 4. **Human-in-the-Loop:**
-* The AI provides an "Insight," but does not auto-execute. A human engineer reviews the diagnosis via the Streamlit dashboard.
-
+   * The AI provides an "Insight," but does not auto-execute. A human engineer reviews the diagnosis via the Streamlit dashboard.
 
 5. **Action (IT Layer - SAP Integration):**
-* Upon approval, the system connects to **SAP S/4HANA** (simulated) to check parts availability (MM Module) and automatically generate a Work Order (PM Module).
+   * Upon approval, the system connects to **SAP S/4HANA** (simulated) to check parts availability (MM Module) and automatically generate a Work Order (PM Module).
 
 
 
