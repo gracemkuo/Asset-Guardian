@@ -12,11 +12,11 @@ import plotly.graph_objects as go
 from datetime import datetime, timedelta
 
 # ==========================================
-# 1. 配置與設置
+# 1. Configuration and Settings
 # ==========================================
 st.set_page_config(page_title="Enerflex Asset Guardian", layout="wide", page_icon="🛡️")
 
-# 自定義 CSS
+# Custom CSS
 st.markdown("""
     <style>
     .stMetric {
@@ -30,17 +30,17 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 # ==========================================
-# 1.5 Azure OpenAI 初始化
+# 1.5 Azure OpenAI Initialization
 # ==========================================
 @st.cache_resource
 def init_azure_openai():
-    """初始化 Azure OpenAI 客戶端"""
+    """Initialize Azure OpenAI client"""
     try:
         azure_endpoint = st.secrets["AZURE_OPENAI_ENDPOINT"]
         api_key = st.secrets["AZURE_OPENAI_API_KEY"]
         api_version = st.secrets["AZURE_OPENAI_API_VERSION"]
         if not azure_endpoint or not api_key or not api_version:
-            st.error("Azure OpenAI 配置未設置")
+            st.error("Azure OpenAI configuration not set")
             return None
         client = AzureOpenAI(
             azure_endpoint=azure_endpoint,
@@ -49,32 +49,32 @@ def init_azure_openai():
         )
         return client
     except Exception as e:
-        st.error(f"Azure OpenAI 初始化失敗: {str(e)}")
+        st.error(f"Azure OpenAI initialization failed: {str(e)}")
         return None
     
-# 全局閾值
-ANOMALY_THRESHOLD = 0.15      # AI 預警閾值 (Drift)
-SCADA_TRIP_THRESHOLD = 0.6    # SCADA 跳機閾值 (紅線)
+# Global thresholds
+ANOMALY_THRESHOLD = 0.15      # AI alert threshold (Drift)
+SCADA_TRIP_THRESHOLD = 0.6    # SCADA trip threshold (Red line)
 
 # ==========================================
-# 新增：繪製專業圖表的函數
+# New: Function for creating professional charts
 # ==========================================
 def create_vibration_chart(df, show_thresholds=True):
     """
-    使用 Plotly 創建專業的振動監控圖表
+    Create professional vibration monitoring chart using Plotly
     """
-    # 生成時間戳記（從當前時間往前推）
+    # Generate timestamps (counting back from current time)
     end_time = datetime.now()
     start_time = end_time - timedelta(hours=2)
     
-    # 確保 df 有正確的長度
+    # Ensure df has correct length
     num_points = len(df)
     timestamps = pd.date_range(start=start_time, end=end_time, periods=num_points)
-    
-    # 創建圖表
+
+    # Create chart
     fig = go.Figure()
-    
-    # 主要數據線
+
+    # Main data line
     fig.add_trace(go.Scatter(
         x=timestamps,
         y=df['Vibration (IPS)'],
@@ -86,7 +86,7 @@ def create_vibration_chart(df, show_thresholds=True):
     ))
     
     if show_thresholds:
-        # AI 預警閾值 (橘色虛線) - 放在數據線下方
+        # AI alert threshold (orange dotted line) - placed below data line
         fig.add_hline(
             y=ANOMALY_THRESHOLD,
             line_dash="dot",
@@ -97,7 +97,7 @@ def create_vibration_chart(df, show_thresholds=True):
             annotation=dict(font_size=11, font_color="orange")
         )
         
-        # SCADA 跳機閾值 (紅色虛線)
+        # SCADA trip threshold (red dashed line)
         fig.add_hline(
             y=SCADA_TRIP_THRESHOLD,
             line_dash="dash",
@@ -108,9 +108,9 @@ def create_vibration_chart(df, show_thresholds=True):
             annotation=dict(font_size=11, font_color="red")
         )
         
-        # 如果超過 AI 閾值，標註黃色區域
+        # If exceeding AI threshold, mark yellow zone
         if df['Vibration (IPS)'].max() > ANOMALY_THRESHOLD:
-            # 找到第一個超過閾值的點
+            # Find the first point exceeding threshold
             exceed_mask = df['Vibration (IPS)'] > ANOMALY_THRESHOLD
             if exceed_mask.any():
                 exceed_idx = exceed_mask.idxmax()
@@ -125,11 +125,11 @@ def create_vibration_chart(df, show_thresholds=True):
                     annotation=dict(font_size=10)
                 )
     
-    # 計算 Y 軸範圍
+    # Calculate Y axis range
     max_val = df['Vibration (IPS)'].max()
     y_max = max(SCADA_TRIP_THRESHOLD * 1.2, max_val * 1.15)
-    
-    # 更新布局
+
+    # Update layout
     fig.update_layout(
         title={
             'text': 'Vibration Sensor - Cylinder 2',
@@ -154,8 +154,8 @@ def create_vibration_chart(df, show_thresholds=True):
             range=[0, y_max]
         ),
         hovermode='x unified',
-        height=450,  # 增加高度
-        margin=dict(l=80, r=120, t=60, b=80),  # 調整邊距，右邊留空間給標註
+        height=450,  # Increased height
+        margin=dict(l=80, r=120, t=60, b=80),  # Adjust margins, leave space on right for annotations
         plot_bgcolor='white',
         paper_bgcolor='white',
         font=dict(family="Arial, sans-serif", size=12, color="#2c3e50")
@@ -163,10 +163,10 @@ def create_vibration_chart(df, show_thresholds=True):
     
     return fig
 # ==========================================
-# 2. 核心邏輯 (保持不變的部分)
+# 2. Core Logic (unchanged parts)
 # ==========================================
 
-def load_real_data(file_path="nasa_sample.csv"):
+def load_real_data(file_path="vibration_data_sample.csv"):
     try:
         df = pd.read_csv(file_path)
         target_col = df.columns[1] if len(df.columns) > 1 else df.columns[0]
@@ -176,7 +176,7 @@ def load_real_data(file_path="nasa_sample.csv"):
         df["Timestamp"] = df.index
         return df
     except FileNotFoundError:
-        st.error(f"找不到檔案: {file_path}")
+        st.error(f"File not found: {file_path}")
         return None
 
 def get_real_manual_content_from_azure(user_query, azure_openai_client):
@@ -236,7 +236,7 @@ def call_mock_sap_api(part_id):
 
 def run_edge_slm_triage(vibration_val):
     """
-    [Edge AI] 使用 SLM (如 Phi-3 Mini) 進行地端快篩
+    [Edge AI] Use SLM (such as Phi-3 Mini) for edge-based quick triage
     """
     time.sleep(0.5)
     
@@ -260,7 +260,7 @@ def run_edge_slm_triage(vibration_val):
         }
 
 def diagnose_with_azure_openai(client, vibration_data, manual_context):
-    """使用 Azure OpenAI 進行智能診斷"""
+    """Perform intelligent diagnosis using Azure OpenAI"""
     
     recent_readings = vibration_data.tail(10)['Vibration (IPS)'].tolist()
     max_vibration = vibration_data['Vibration (IPS)'].max()
@@ -335,7 +335,7 @@ Response must be valid JSON only with this exact structure:
             }
         
     except Exception as e:
-        st.error(f"AI 診斷失敗: {str(e)}")
+        st.error(f"AI diagnosis failed: {str(e)}")
         return {
             "root_cause": "System diagnostic error - manual inspection required",
             "severity": "High",
@@ -344,14 +344,14 @@ Response must be valid JSON only with this exact structure:
         }
 
 # ==========================================
-# 3. Streamlit UI (使用新的圖表函數)
+# 3. Streamlit UI (using new chart function)
 # ==========================================
 
 st.title("🛡️ Enerflex Asset Guardian | Oman - Maradi Huraymah Field")
 
 azure_client = init_azure_openai()
 
-# --- 上層：監控面板 ---
+# --- Top layer: Monitoring panel ---
 top_col1, top_col2 = st.columns([3, 1])
 
 with top_col1:
@@ -364,7 +364,7 @@ with top_col2:
     status_placeholder = st.empty()
     run_btn = st.button("▶️ Start Simulation", type="primary", width='stretch')
 
-# 變數初始化
+# Variable initialization
 if 'simulation_df' not in st.session_state:
     st.session_state['simulation_df'] = None
 
@@ -375,13 +375,13 @@ if 'final_val' not in st.session_state:
 if 'ai_diagnosis' not in st.session_state:
     st.session_state['ai_diagnosis'] = None
 
-# --- 執行模擬邏輯 ---
+# --- Execute simulation logic ---
 if run_btn:
     st.session_state['sap_checked'] = False
     st.session_state['data_finished'] = False
     st.session_state['ai_diagnosis'] = None
-    
-    # 生成數據
+
+    # Generate data
     dummy_df = pd.DataFrame({
         "Timestamp": range(100),
         "bearing_1": np.concatenate([
@@ -389,21 +389,21 @@ if run_btn:
             np.linspace(0.06, 0.2, 30) + np.random.normal(0, 0.01, 30) 
         ])
     })
-    dummy_df.to_csv("nasa_sample.csv", index=False)
-    data = load_real_data("nasa_sample.csv")
+    dummy_df.to_csv("vibration_data_sample.csv", index=False)
+    data = load_real_data("vibration_data_sample.csv")
 
     if data is not None:
         status_placeholder.info("System Running...")
         for i in range(1, len(data)):
             current_df = data.iloc[:i]
-            
-            # 使用新的 Plotly 圖表
+
+            # Use new Plotly chart
             fig = create_vibration_chart(current_df, show_thresholds=True)
             chart_placeholder.plotly_chart(fig, width='stretch')
             
             val = current_df.iloc[-1]["Vibration (IPS)"]
-            
-            # 更新指標
+
+            # Update metrics
             delta_color = "normal" if val < ANOMALY_THRESHOLD else "inverse"
             metric_placeholder.metric(
                 "Vibration (IPS)", 
@@ -417,13 +417,13 @@ if run_btn:
         st.session_state['final_val'] = val
         st.session_state['simulation_df'] = data
 
-# --- 下層：決策戰情室 ---
+# --- Bottom layer: Decision control room ---
 if st.session_state['simulation_df'] is not None:
-    # 畫最後一張靜態圖
+    # Draw final static chart
     final_fig = create_vibration_chart(st.session_state['simulation_df'], show_thresholds=True)
     chart_placeholder.plotly_chart(final_fig, width='stretch')
-    
-    # 顯示最後的 Metric
+
+    # Display final metrics
     val = st.session_state['final_val']
     delta_color = "normal" if val < ANOMALY_THRESHOLD else "inverse"
     metric_placeholder.metric("Vibration (IPS)", f"{val:.3f}", delta=f"{val-0.06:.3f}", delta_color=delta_color)
@@ -433,13 +433,13 @@ if st.session_state['simulation_df'] is not None:
         
         st.divider()
         st.subheader("🧠 Zone 2 & 3: Incident Response Center")
-        
+
         action_col1, action_col2 = st.columns(2, gap="medium")
-        
-        # === 左下：AI 診斷 ===
+
+        # === Bottom left: AI diagnosis ===
         with action_col1:
             st.subheader("Zone 2: Hybrid AI Diagnosis")
-            
+
             # --- Layer 1: Edge SLM (Phi-3) ---
             st.markdown("##### 1️⃣ Edge Triage (SLM: Phi-3 Mini)")
             
@@ -450,7 +450,7 @@ if st.session_state['simulation_df'] is not None:
                 st.error(f"**[{slm_result['status']}]** {slm_result['msg']}")
             else:
                 st.warning(f"**[{slm_result['status']}]** {slm_result['msg']}")
-            
+
             # --- Layer 2: Cloud LLM (GPT-4o) ---
             if slm_result['should_escalate']:
                 st.markdown("##### 2️⃣ Cloud Expert Analysis (LLM: GPT-4o)")
@@ -494,8 +494,8 @@ if st.session_state['simulation_df'] is not None:
             
             else:
                 st.info("SLM determined no cloud analysis needed. Saving costs. 💰")
-        
-        # === 右下：SAP 執行 ===
+
+        # === Bottom right: SAP execution ===
         with action_col2:
             st.warning("🏢 **Step 2: SAP Execution (ERP Bridge)**")
             
